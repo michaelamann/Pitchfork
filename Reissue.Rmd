@@ -1,0 +1,149 @@
+---
+title: "Reissue"
+author: "Michael Mann"
+date: '2022-06-17'
+output: html_document
+---
+
+Pitchfork reissues reviews. I am curious to see how the scores in reissues compare to the initial reviews. 
+Were the intial ones typically overlooked? or are they just bumped up in the score. 
+
+
+To test this I need to 
+```{r setup}
+library(DBI)
+library(tidyverse)
+
+pitchfork_db <- dbConnect(RSQLite::SQLite(), "database.sqlite")
+
+```
+
+
+```{r list all tables}
+# list all table
+dbListTables(pitchfork_db)
+
+```
+
+
+```{r list all tables}
+# list all table
+dbListFields(pitchfork_db, "reviews")
+
+```
+
+I am creating a SQL query below and saving it to the pitchfork_dataset object. 
+This code joins three separate tables (reviews, artists, and genres) into one dataframe
+```{r query database}
+pitchfork_dataset <- 
+  dbGetQuery(pitchfork_db,
+           "SELECT 
+              r.reviewid AS reviews_reviewid,
+              r.title,
+              r.score,
+              r.best_new_music,
+              r.author,
+              r.author_type,
+              r.pub_date,
+              r.pub_year, 
+              a.artist,
+              a.reviewid AS artists_reviewid,
+              g.reviewid AS genres_reviewid,
+              g.genre
+            FROM reviews r
+            LEFT JOIN artists a
+            ON r.reviewid = a.reviewid
+            LEFT JOIN genres g
+            ON r.reviewid = g.reviewid;") %>%
+  tibble()  %>% # change to tibble
+  select(-artists_reviewid, -genres_reviewid) # redundant but necessary not to get duplicated columns
+```
+
+
+
+```{r exploring the data}
+pitchfork_dataset %>%
+  ggplot(aes(x = as.factor(pub_year), y = score)) + 
+  geom_boxplot() + 
+  facet_wrap(~genre)
+
+
+
+
+
+
+```
+
+One problem is a lot of these albums are listed as multiple genres. I want to collapse these down into their own levels.
+```{r data cleaining}
+
+
+pitchfork_dataset_clean <- 
+  pitchfork_dataset %>%
+  drop_na(genre) %>% # drop those without a genre
+  select(reviews_reviewid,title, score, best_new_music,  best_new_music, author, pub_year, genre ) %>%
+  distinct() %>%
+  group_by(reviews_reviewid) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(num = map_int(data, nrow)) %>%
+  filter(num == 1) %>% # limit to one record per review. This is needed in cases of multiple genres. For simplicity, i will only use single genre albums
+  unnest(data)
+
+  
+
+
+```
+
+
+
+```{r building models}
+
+library(lme4) # for models
+
+
+m_interaction <- lmer((score) ~ genre*scale(pub_year) + (1|author), data =  pitchfork_dataset_clean)
+m_additive <- lmer((score) ~ genre + scale(pub_year) + (1|author), data =  pitchfork_dataset_clean)
+m_genre <- lmer((score) ~ genre  + (1|author), data =  pitchfork_dataset_clean)
+m_year <- lmer((score) ~  scale(pub_year) + (1|author), data =  pitchfork_dataset_clean)
+m_null <- lmer((score) ~ 1 + (1|author), data =  pitchfork_dataset_clean)
+
+m_interaction_no_author <- lm((score) ~ genre*scale(pub_year), data =  pitchfork_dataset_clean)
+
+
+# testing for random effects
+lmerTest::ranova(m_interaction)
+```
+
+Best model is one with the interaction between genres and years
+```{r compare and check diagnostics }
+library(performance) # checking assumptions
+check_model(m_interaction)
+
+
+# using performance package
+compare_performance(m_interaction, m_additive,m_genre, m_year, m_null )
+
+```
+R-squared is rather low but better for random effect. Author seems to matter
+```{r looking at R-squared}
+
+r2(m_interaction)
+
+r2_nakagawa(m_interaction, by_group = TRUE)
+
+lmerTest::ranova(m_interaction)
+```
+
+
+```{r plotting interaction, message=FALSE, warning=FALSE}
+library(emmeans)
+
+# plot predictions for each genre
+emmip(m_interaction, genre ~ scale(pub_year), 
+      cov.reduce = FALSE, CIs = TRUE) + facet_wrap(~genre) + theme_bw()
+
+
+emtrends(m_interaction, pairwise ~ genre, var = "scale(pub_year)", pbkrtest.limit = 12147)
+
+```
