@@ -1,5 +1,5 @@
 ---
-title: "Reissue"
+title: "Pitchfork Analysis"
 author: "Michael Mann"
 date: '2022-06-17'
 output: html_document
@@ -204,4 +204,4 @@ low_scores %>%
 
 ```
 
-in conclusion, Pitchfork scores have slightly increased for most genres but most noticeably for metal albums. Also the number of albums from genres beyond their staple-electronic and rock music, has increased over time. Finally, when they did review other genres such as metal, they were very critical for the beginning of the 2000's but have ceased to give as many harsh reviews.
+In conclusion, Pitchfork scores have slightly increased for most genres but most noticeably for metal albums. Also the number of albums from genres beyond their staple-electronic and rock music, has increased over time. Finally, when they did review other genres such as metal, they were very critical for the beginning of the 2000's but have ceased to give as many harsh reviews.
