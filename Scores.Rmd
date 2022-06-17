@@ -5,11 +5,10 @@ date: '2022-06-17'
 output: html_document
 ---
 
-Pitchfork reissues reviews. I am curious to see how the scores in reissues compare to the initial reviews. 
-Were the intial ones typically overlooked? or are they just bumped up in the score. 
+This is a quick analysis to dive into how pitchfork review scores have changed over time. This is a fascinating dataset becuase you have a large sample size and can account for factors such as author of the review. 
+I am going to analyze how the scores have changed across each genre, how the allocation of reviews for each genre has changed, and finally, how their use of very low scores has shifted. 
 
-
-To test this I need to 
+First, I need to query the database by setting up a connection to the sqlite databse. I can do this with DBI
 ```{r setup}
 library(DBI)
 library(tidyverse)
@@ -18,19 +17,20 @@ pitchfork_db <- dbConnect(RSQLite::SQLite(), "database.sqlite")
 
 ```
 
-
+This is checking for all the tables present in the database
 ```{r list all tables}
 # list all table
 dbListTables(pitchfork_db)
 
 ```
 
-
-```{r list all tables}
+Example of listing all of the fields in the reviews table
+```{r list all fields in reviews table}
 # list all table
 dbListFields(pitchfork_db, "reviews")
 
 ```
+
 
 I am creating a SQL query below and saving it to the pitchfork_dataset object. 
 This code joins three separate tables (reviews, artists, and genres) into one dataframe
@@ -60,7 +60,7 @@ pitchfork_dataset <-
 ```
 
 
-
+# a quick exploratory plot to see what the scores are for each genre over time. From the outset, it is clear that there is a consistent median of scores around 7 range. No major trends that I notice so far besides a slight decline in rap scores and lower scores initially for metal. 
 ```{r exploring the data}
 pitchfork_dataset %>%
   ggplot(aes(x = as.factor(pub_year), y = score)) + 
@@ -71,14 +71,14 @@ pitchfork_dataset %>%
 
 ```
 
-One problem is a lot of these albums are listed as multiple genres. I want to collapse these down into their own levels.
+Since there were a lot of albums without a genre, I am going to remove those. I am also going to drop albums that span multiple genres (they will combine too many unique genres that will be hard to test) or are reissues of the same album. This will simplify the dataset so we can look for overall trends. 
 ```{r data cleaining}
 
 
 pitchfork_dataset_clean <- 
   pitchfork_dataset %>%
   drop_na(genre) %>% # drop those without a genre
-  select(reviews_reviewid,title, score, best_new_music,  best_new_music, author, pub_year, genre ) %>%
+  select(reviews_reviewid,title, score, best_new_music,  best_new_music, author, pub_year, artist, genre ) %>%
   distinct() %>%
   group_by(reviews_reviewid) %>%
   nest() %>%
@@ -93,7 +93,7 @@ pitchfork_dataset_clean <-
 ```
 
 
-
+Now I am going to build models to compare them using AICc scores. I am building a complex one that compares different genres, different slopes for each year, and using the author (critic) as a random effect in case there are biases. I will compare that complex model down to one that has no predictors to see if any are necessary.  
 ```{r building models}
 
 library(lme4) # for models
@@ -108,11 +108,10 @@ m_null <- lmer((score) ~ 1 + (1|author), data =  pitchfork_dataset_clean)
 m_interaction_no_author <- lm((score) ~ genre*scale(pub_year), data =  pitchfork_dataset_clean)
 
 
-# testing for random effects
-lmerTest::ranova(m_interaction)
+
 ```
 
-Best model is one with the interaction between genres and years
+Best model is one with the interaction between genres and years. Thus we keep the most complex model with the interaction between genres and years. The model assumptions are also met. 
 ```{r compare and check diagnostics }
 library(performance) # checking assumptions
 check_model(m_interaction)
@@ -121,8 +120,11 @@ check_model(m_interaction)
 # using performance package
 compare_performance(m_interaction, m_additive,m_genre, m_year, m_null )
 
+# testing for random effects
+lmerTest::ranova(m_interaction)
+
 ```
-R-squared is rather low but better for random effect. Author seems to matter
+R-squared is rather low but better for random effect. Thus any statistical significance is explaining very little of the differences over time or by genre. But the author is significant as well as we can tell by the ANOVA-like table for random-effects. 
 ```{r looking at R-squared}
 
 r2(m_interaction)
@@ -132,15 +134,74 @@ r2_nakagawa(m_interaction, by_group = TRUE)
 lmerTest::ranova(m_interaction)
 ```
 
-
+Plotting the slopes for each genre over time. The majority of genres increase in their scores but it is noticable that rap doesn't follow that trend. Metal makes the greatest increase over the the past two decades. 
 ```{r plotting interaction, message=FALSE, warning=FALSE}
 library(emmeans)
 
 # plot predictions for each genre
 emmip(m_interaction, genre ~ scale(pub_year), 
       cov.reduce = FALSE, CIs = TRUE) + facet_wrap(~genre) + theme_bw()
+```
+
+let's dive in deeper on the metal data since that is the most interesting pattern. 
+let's filter our dataset just to metal albums. One thing I noticed initially was, there aren't many reviews of metal albums in the early 2000s. I wonder how much of that is that most of that scene would've been the nu-metal era which was not highly respected by music critics in teh indie world.
+```{r}
+metal_dataset <- 
+  pitchfork_dataset_clean %>%
+  filter(genre == "metal") 
+
+# raw data of metal scores over the years. 
+metal_dataset %>%
+  ggplot(aes(x = pub_year, y = score, color = as.factor(best_new_music))) + geom_point()
 
 
-emtrends(m_interaction,  ~ genre, var = "scale(pub_year)", pbkrtest.limit = 12147)
+
+metal_dataset %>%
+  group_by(pub_year) %>%
+  count(name = "Count") %>%
+  ungroup() %>%
+  ggplot(aes(x = pub_year, y = Count)) + geom_bar(stat = "identity") 
 
 ```
+
+Let's see how this stacks up relative to other genres over the years. Fascinating, their reviews mostly focus on only electronic and rock music. Much better diversity of genres today.
+```{r proportion by genre}
+pitchfork_dataset_clean %>%
+  filter(pub_year < 2017) %>% # very little data when this dataset was compiled then
+  group_by(genre, pub_year) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(pub_year) %>%
+  mutate(percent = 100 * Count/sum(Count)) %>%
+  ungroup() %>%
+  ggplot(aes(x = pub_year, y =percent, fill = genre)) + 
+  geom_bar(stat = "identity") + theme_classic() + ggtitle("Percent of reviews of each genre over time")
+
+```
+
+
+Pitchfork used to be known for giving very low scores in the early 2000s to mock albums. Was there a bias in what genres those were? I compiled the number and percentage of reviews lower than 4 for each genre over time. While the count per genre looks equal, when you look at the percentage, it is clear that metal, pop, and experimental were gettting a disproportionate number of very low scores out of the few reviews they were completing. Also, you can see from both graphs that the number of low score reviews drops off after 2010. 
+```{r low scores}
+low_scores <- 
+  pitchfork_dataset_clean %>%
+  filter(pub_year < 2017) %>%
+  mutate(low_score = case_when(score < 4 ~ "Low", TRUE ~ "Normal")) %>%
+  group_by(genre, pub_year, low_score) %>%
+  count() %>%
+  ungroup() %>%
+  pivot_wider(names_from = low_score, values_from = n, values_fill = 0) %>%
+  mutate(Total = Low+Normal) %>%
+  mutate(pecent_low = (100* Low / Total)) 
+
+# not very informative due to the disparity in how many reviews they did for each genre
+low_scores %>%
+  ggplot(aes(x = pub_year, y = Low, color = genre, group = genre)) + 
+  geom_point() + geom_line() + facet_wrap(~genre) + theme_bw() + ggtitle("Count of reviews with scores lower than 4")
+
+# metal really jumps out when you look at the percent!
+low_scores %>%
+  ggplot(aes(x = pub_year, y = pecent_low, color = genre, group = genre)) + 
+  geom_point() + geom_line() + facet_wrap(~genre) + theme_bw() + ggtitle("Percent of reviews with scores lower than 4")
+
+```
+
+in conclusion, Pitchfork scores have slightly increased for most genres but most noticeably for metal albums. Also the number of albums from genres beyond their staple-electronic and rock music, has increased over time. Finally, when they did review other genres such as metal, they were very critical for the beginning of the 2000's but have ceased to give as many harsh reviews.
